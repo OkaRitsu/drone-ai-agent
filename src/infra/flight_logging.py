@@ -11,6 +11,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+STATE_CSV_FIELDS = [
+    "pitch",
+    "roll",
+    "yaw",
+    "vgx",
+    "vgy",
+    "vgz",
+    "templ",
+    "temph",
+    "tof",
+    "h",
+    "bat",
+    "baro",
+    "time",
+    "agx",
+    "agy",
+    "agz",
+]
+
 
 class VideoRecorder(Protocol):
     """Protocol for video recorder operations used by flight logger."""
@@ -61,7 +80,7 @@ class FlightLogger:
         self._command_fp = None
         self._command_writer: csv.writer | None = None
         self._state_fp = None
-        self._state_writer: csv.writer | None = None
+        self._state_writer: csv.DictWriter | None = None
         self._state_thread: threading.Thread | None = None
         self._state_stop = threading.Event()
         self._lock = threading.Lock()
@@ -94,8 +113,11 @@ class FlightLogger:
             self._state_fp = (self._session_dir / "state.csv").open(
                 "w", encoding="utf-8", newline=""
             )
-            self._state_writer = csv.writer(self._state_fp)
-            self._state_writer.writerow(["timestamp", "raw", "state_json"])
+            self._state_writer = csv.DictWriter(
+                self._state_fp,
+                fieldnames=["timestamp", "raw", *STATE_CSV_FIELDS],
+            )
+            self._state_writer.writeheader()
 
             metadata = {
                 "started_at": datetime.now().isoformat(timespec="seconds"),
@@ -160,13 +182,14 @@ class FlightLogger:
         while not self._state_stop.is_set():
             raw, parsed = self._state_provider()
             if self._state_fp is not None and self._state_writer is not None and parsed is not None:
-                self._state_writer.writerow(
-                    [
-                        datetime.now().isoformat(timespec="milliseconds"),
-                        raw or "",
-                        json.dumps(parsed, ensure_ascii=True),
-                    ]
-                )
+                row: dict[str, Any] = {
+                    "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                    "raw": raw or "",
+                }
+                for key in STATE_CSV_FIELDS:
+                    value = parsed.get(key)
+                    row[key] = "" if value is None else value
+                self._state_writer.writerow(row)
                 self._state_fp.flush()
             time.sleep(self._config.state_sample_interval_sec)
 

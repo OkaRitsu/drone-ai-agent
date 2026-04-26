@@ -1,12 +1,14 @@
 """Unit tests for TELLO terminal command handling."""
 
+import socket
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
 
+from main import run_interactive
 from src.app.dashboard import PLOT_GROUPS, RerunDashboard, build_video_stream_url
-from src.infra.flight_logging import FlightLogConfig, FlightLogger
+from src.infra.flight_logging import STATE_CSV_FIELDS, FlightLogConfig, FlightLogger
 from src.infra.tello.commands import build_sdk_command
 from src.infra.tello.protocol import decode_response
 from src.infra.tello.state import parse_state_payload
@@ -162,9 +164,35 @@ class FlightLoggerTest(unittest.TestCase):
             latest_commands = (sessions[0] / "commands.csv").read_text(encoding="utf-8")
             self.assertIn("land", latest_commands)
             latest_state = (sessions[0] / "state.csv").read_text(encoding="utf-8")
-            self.assertIn("state_json", latest_state)
+            self.assertIn("raw", latest_state)
+            self.assertIn("bat", latest_state)
+            for field in STATE_CSV_FIELDS:
+                self.assertIn(field, latest_state)
             video.start_recording.assert_called()
             video.stop_recording.assert_called()
+
+
+class InteractiveLoggingTest(unittest.TestCase):
+    """Tests for interactive logging behavior on command timeouts."""
+
+    def test_takeoff_timeout_does_not_abort_log_session(self) -> None:
+        transport = mock.Mock()
+        transport.send_command.side_effect = socket.timeout()
+
+        flight_logger = mock.Mock()
+        flight_logger.session_active.side_effect = [False, True]
+        flight_logger.start_session.return_value = Path("logs/20260426_000000")
+
+        with mock.patch("builtins.input", side_effect=["takeoff", "quit"]):
+            run_interactive(transport, flight_logger)
+
+        flight_logger.start_session.assert_called_once()
+        flight_logger.log_command.assert_called_once_with(
+            command="takeoff",
+            response="timeout",
+            status="error",
+        )
+        flight_logger.stop_session.assert_not_called()
 
 
 if __name__ == "__main__":

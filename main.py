@@ -60,14 +60,6 @@ def run_interactive(transport: TelloTransport, flight_logger: FlightLogger) -> N
             print(f"{sdk_command} -> {response}")
 
             if (
-                sdk_command == "takeoff"
-                and not response.lower().startswith("ok")
-                and flight_logger.session_active()
-            ):
-                flight_logger.stop_session()
-                print("flight-log -> aborted")
-
-            if (
                 sdk_command in {"land", "emergency"}
                 and response.lower().startswith("ok")
                 and flight_logger.session_active()
@@ -81,9 +73,6 @@ def run_interactive(transport: TelloTransport, flight_logger: FlightLogger) -> N
             print("No response from TELLO (timeout).")
             if flight_logger.session_active():
                 flight_logger.log_command(command=line, response="timeout", status="error")
-                if line.lower().strip().startswith("takeoff"):
-                    flight_logger.stop_session()
-                    print("flight-log -> aborted")
 
 
 def parse_args() -> argparse.Namespace:
@@ -198,13 +187,6 @@ def main() -> None:
             if flight_logger.session_active():
                 flight_logger.log_command(command=sdk_command, response=result, status="ok")
             print(f"{sdk_command} -> {result}")
-            if (
-                sdk_command == "takeoff"
-                and not result.lower().startswith("ok")
-                and flight_logger.session_active()
-            ):
-                flight_logger.stop_session()
-                print("flight-log -> aborted")
             return
 
         run_interactive(transport, flight_logger)

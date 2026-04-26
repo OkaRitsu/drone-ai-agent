@@ -23,6 +23,19 @@ tello> forward 30
 tello> land
 ```
 
+## 飛行ログ保存
+
+`takeoff` から `land`（または `emergency`）までを1セッションとして保存します。
+
+- 保存先: `logs/YYYYMMDD_hhmmss/`
+- 保存内容:
+  - `commands.csv`（実行コマンドと応答）
+  - `state.csv`（ドローン状態スナップショット）
+  - `video.mp4`（飛行中の動画）
+  - `metadata.json`
+
+保存件数は `--max-log-sessions` で制御でき、上限を超えた古いログは自動削除されます。
+
 ## ワンショット実行
 
 ```bash
@@ -33,6 +46,12 @@ uv run main.py --command "battery?"
 
 ```bash
 uv run main.py --no-video
+```
+
+## ログ保存の設定例
+
+```bash
+uv run main.py --log-dir logs --max-log-sessions 30 --state-sample-interval 0.5
 ```
 
 ## 単体テスト（実機不要）

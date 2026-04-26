@@ -5,11 +5,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from app.dashboard import PLOT_GROUPS, RerunDashboard, build_video_stream_url
-from infra.flight_logging import FlightLogConfig, FlightLogger
-from infra.tello.commands import build_sdk_command
-from infra.tello.protocol import decode_response
-from infra.tello.state import parse_state_payload
+from src.app.dashboard import PLOT_GROUPS, RerunDashboard, build_video_stream_url
+from src.infra.flight_logging import FlightLogConfig, FlightLogger
+from src.infra.tello.commands import build_sdk_command
+from src.infra.tello.protocol import decode_response
+from src.infra.tello.state import parse_state_payload
 
 
 class BuildSdkCommandTest(unittest.TestCase):
@@ -78,7 +78,7 @@ class DashboardTest(unittest.TestCase):
     def test_start_raises_when_rerun_not_installed(self) -> None:
         dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
 
-        with mock.patch("app.dashboard.importlib.import_module") as import_module:
+        with mock.patch("src.app.dashboard.importlib.import_module") as import_module:
             import_module.side_effect = [object(), ModuleNotFoundError("No module named 'rerun'")]
             with self.assertRaises(RuntimeError):
                 dashboard.start()
@@ -89,9 +89,9 @@ class DashboardTest(unittest.TestCase):
         cv2_mock = mock.Mock()
         rr_mock = mock.Mock()
 
-        with mock.patch("app.dashboard.importlib.import_module") as import_module:
+        with mock.patch("src.app.dashboard.importlib.import_module") as import_module:
             import_module.side_effect = [cv2_mock, rr_mock]
-            with mock.patch("app.dashboard.threading.Thread") as thread_cls:
+            with mock.patch("src.app.dashboard.threading.Thread") as thread_cls:
                 video_thread = mock.Mock()
                 state_thread = mock.Mock()
                 thread_cls.side_effect = [video_thread, state_thread]

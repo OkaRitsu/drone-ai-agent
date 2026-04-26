@@ -5,8 +5,8 @@ from __future__ import annotations
 import socket
 import threading
 
-from infra.tello.config import TelloConfig
-from infra.tello.protocol import decode_response
+from src.infra.tello.config import TelloConfig
+from src.infra.tello.protocol import decode_response
 
 
 class TelloTransport:

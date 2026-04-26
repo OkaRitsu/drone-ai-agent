@@ -1,8 +1,15 @@
 """Unit tests for TELLO terminal command handling."""
 
 import unittest
+from unittest import mock
 
-from main import _decode_response, build_sdk_command
+from main import (
+    VideoWindow,
+    _decode_response,
+    build_sdk_command,
+    build_video_stream_url,
+    build_video_viewer_command,
+)
 
 
 class BuildSdkCommandTest(unittest.TestCase):
@@ -48,6 +55,44 @@ class DecodeResponseTest(unittest.TestCase):
             _decode_response(bytes([0xCC, 0x01])),
             "non-utf8-response:0xcc01",
         )
+
+
+class VideoWindowTest(unittest.TestCase):
+    """Tests for TELLO OpenCV video window launcher."""
+
+    def test_build_video_stream_url(self) -> None:
+        """Builds UDP URL with expected endpoint."""
+        self.assertEqual(build_video_stream_url(11111), "udp://0.0.0.0:11111")
+
+    def test_build_video_viewer_command(self) -> None:
+        """Builds subprocess command for video viewer mode."""
+        command = build_video_viewer_command(11111)
+        self.assertIn("--video-viewer-only", command)
+        self.assertEqual(command[-1], "11111")
+
+    def test_start_raises_when_opencv_not_installed(self) -> None:
+        """Raises error when OpenCV package is not available."""
+        window = VideoWindow(video_port=11111)
+        with mock.patch(
+            "main.importlib.import_module",
+            side_effect=ModuleNotFoundError("No module named 'cv2'"),
+        ):
+            with self.assertRaises(RuntimeError):
+                window.start()
+
+    def test_start_and_stop_with_mocked_subprocess(self) -> None:
+        """Starts and stops spawned viewer process."""
+        window = VideoWindow(video_port=11111)
+        process = mock.Mock()
+        process.poll.return_value = None
+
+        with mock.patch("main.importlib.import_module", return_value=object()):
+            with mock.patch("main.subprocess.Popen", return_value=process):
+                window.start()
+                window.stop()
+
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once()
 
 
 if __name__ == "__main__":

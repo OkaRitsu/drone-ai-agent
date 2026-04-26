@@ -3,13 +3,9 @@
 import unittest
 from unittest import mock
 
-from main import (
-    VideoWindow,
-    _decode_response,
-    build_sdk_command,
-    build_video_stream_url,
-    build_video_viewer_command,
-)
+from infra.tello.commands import build_sdk_command
+from infra.tello.protocol import decode_response
+from infra.tello_cli import VideoWindow, build_video_stream_url, build_video_viewer_command
 
 
 class BuildSdkCommandTest(unittest.TestCase):
@@ -47,12 +43,12 @@ class DecodeResponseTest(unittest.TestCase):
 
     def test_decode_utf8_response(self) -> None:
         """Decodes normal UTF-8/ASCII payload."""
-        self.assertEqual(_decode_response(b"ok\r\n"), "ok")
+        self.assertEqual(decode_response(b"ok\r\n"), "ok")
 
     def test_decode_non_utf8_response(self) -> None:
         """Returns hex text instead of raising decode errors."""
         self.assertEqual(
-            _decode_response(bytes([0xCC, 0x01])),
+            decode_response(bytes([0xCC, 0x01])),
             "non-utf8-response:0xcc01",
         )
 
@@ -74,7 +70,7 @@ class VideoWindowTest(unittest.TestCase):
         """Raises error when OpenCV package is not available."""
         window = VideoWindow(video_port=11111)
         with mock.patch(
-            "main.importlib.import_module",
+            "infra.tello_cli.importlib.import_module",
             side_effect=ModuleNotFoundError("No module named 'cv2'"),
         ):
             with self.assertRaises(RuntimeError):
@@ -86,8 +82,8 @@ class VideoWindowTest(unittest.TestCase):
         process = mock.Mock()
         process.poll.return_value = None
 
-        with mock.patch("main.importlib.import_module", return_value=object()):
-            with mock.patch("main.subprocess.Popen", return_value=process):
+        with mock.patch("infra.tello_cli.importlib.import_module", return_value=object()):
+            with mock.patch("infra.tello_cli.subprocess.Popen", return_value=process):
                 window.start()
                 window.stop()
 

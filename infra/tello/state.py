@@ -21,9 +21,25 @@ def parse_state_payload(payload: str) -> dict[str, Any]:
         if not part or ":" not in part:
             continue
         key, value = part.split(":", 1)
+        key = _normalize_key(key)
+        if not key:
+            continue
         value = value.strip()
         result[key] = _coerce_number(value)
     return result
+
+
+def _normalize_key(key: str) -> str:
+    """Normalize telemetry key for safe lookup and logging paths.
+
+    Args:
+        key: Raw key fragment from state payload.
+
+    Returns:
+        Lowercase sanitized key containing only [a-zA-Z0-9_].
+    """
+    sanitized = "".join(ch for ch in key.strip() if ch.isalnum() or ch == "_")
+    return sanitized.lower()
 
 
 def _coerce_number(value: str) -> Any:
@@ -112,4 +128,3 @@ class TelloStateReceiver:
             with self._lock:
                 self._latest_raw = raw
                 self._latest_state = parsed
-

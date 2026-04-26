@@ -1,45 +1,38 @@
 """Unit tests for TELLO terminal command handling."""
 
 from pathlib import Path
-import re
 import tempfile
 import unittest
 from unittest import mock
 
+from app.dashboard import PLOT_GROUPS, RerunDashboard, build_video_stream_url
 from infra.flight_logging import FlightLogConfig, FlightLogger
 from infra.tello.commands import build_sdk_command
 from infra.tello.protocol import decode_response
 from infra.tello.state import parse_state_payload
-from infra.tello_cli import VideoWindow, build_video_stream_url, build_video_worker_command
 
 
 class BuildSdkCommandTest(unittest.TestCase):
     """Tests for CLI command to TELLO SDK command conversion."""
 
     def test_simple_command(self) -> None:
-        """Allows simple one word TELLO commands."""
         self.assertEqual(build_sdk_command("takeoff"), "takeoff")
 
     def test_move_command_with_distance(self) -> None:
-        """Converts move command when distance is in valid range."""
         self.assertEqual(build_sdk_command("forward 30"), "forward 30")
 
     def test_rotation_command_with_degree(self) -> None:
-        """Converts rotation command when degree is in valid range."""
         self.assertEqual(build_sdk_command("cw 90"), "cw 90")
 
     def test_rejects_out_of_range_distance(self) -> None:
-        """Rejects move command when distance is too short."""
         with self.assertRaises(ValueError):
             build_sdk_command("forward 10")
 
     def test_rejects_unsupported_command(self) -> None:
-        """Rejects command not included in parser support."""
         with self.assertRaises(ValueError):
             build_sdk_command("dance")
 
     def test_raw_command_passthrough(self) -> None:
-        """Passes raw SDK command text after raw keyword."""
         self.assertEqual(build_sdk_command("raw mon"), "mon")
 
 
@@ -47,11 +40,9 @@ class DecodeResponseTest(unittest.TestCase):
     """Tests for response byte decoding."""
 
     def test_decode_utf8_response(self) -> None:
-        """Decodes normal UTF-8/ASCII payload."""
         self.assertEqual(decode_response(b"ok\r\n"), "ok")
 
     def test_decode_non_utf8_response(self) -> None:
-        """Returns hex text instead of raising decode errors."""
         self.assertEqual(
             decode_response(bytes([0xCC, 0x01])),
             "non-utf8-response:0xcc01",
@@ -62,62 +53,87 @@ class StateParseTest(unittest.TestCase):
     """Tests for TELLO state payload parsing."""
 
     def test_parse_state_payload(self) -> None:
-        """Parses state string and converts numbers."""
         state = parse_state_payload("pitch:1;roll:-2;bat:93;baro:10.53;time:7;")
         self.assertEqual(state["pitch"], 1)
         self.assertEqual(state["roll"], -2)
         self.assertEqual(state["bat"], 93)
         self.assertEqual(state["baro"], 10.53)
 
+    def test_parse_state_payload_normalizes_keys(self) -> None:
+        state = parse_state_payload("\x00bat:61;  TOF : 10;")
+        self.assertEqual(state["bat"], 61)
+        self.assertEqual(state["tof"], 10)
 
-class VideoWindowTest(unittest.TestCase):
-    """Tests for TELLO OpenCV video worker launcher."""
+
+class DashboardTest(unittest.TestCase):
+    """Tests for Rerun dashboard helpers."""
 
     def test_build_video_stream_url(self) -> None:
-        """Builds UDP URL with expected endpoint."""
         self.assertEqual(build_video_stream_url(11111), "udp://0.0.0.0:11111")
 
-    def test_build_video_worker_command(self) -> None:
-        """Builds subprocess command for video worker mode."""
-        command = build_video_worker_command(11111, 19000, enable_display=False)
-        self.assertIn("--video-worker-only", command)
-        self.assertIn("--control-port", command)
-        self.assertIn("19000", command)
-        self.assertIn("--disable-display", command)
+    def test_plot_groups_definition(self) -> None:
+        self.assertEqual(PLOT_GROUPS["battery_percent"], ["bat"])
+        self.assertIn("yaw", PLOT_GROUPS["attitude_deg"])
 
-    def test_start_raises_when_opencv_not_installed(self) -> None:
-        """Raises error when OpenCV package is not available."""
-        with mock.patch("infra.tello_cli._reserve_local_udp_port", return_value=19000):
-            window = VideoWindow(video_port=11111)
-            with mock.patch(
-                "infra.tello_cli.importlib.import_module",
-                side_effect=ModuleNotFoundError("No module named 'cv2'"),
-            ):
-                with self.assertRaises(RuntimeError):
-                    window.start()
-            window.stop()
+    def test_start_raises_when_rerun_not_installed(self) -> None:
+        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
 
-    def test_start_and_stop_with_mocked_subprocess(self) -> None:
-        """Starts and stops spawned worker process."""
-        with mock.patch("infra.tello_cli._reserve_local_udp_port", return_value=19000):
-            window = VideoWindow(video_port=11111)
-            process = mock.Mock()
-            process.poll.return_value = None
+        with mock.patch("app.dashboard.importlib.import_module") as import_module:
+            import_module.side_effect = [object(), ModuleNotFoundError("No module named 'rerun'")]
+            with self.assertRaises(RuntimeError):
+                dashboard.start()
 
-            with mock.patch("infra.tello_cli.importlib.import_module", return_value=object()):
-                with mock.patch("infra.tello_cli.subprocess.Popen", return_value=process):
-                    window.start()
-                    window.stop()
+    def test_start_and_stop(self) -> None:
+        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
 
-        process.terminate.assert_called_once()
-        process.wait.assert_called_once()
+        cv2_mock = mock.Mock()
+        rr_mock = mock.Mock()
+
+        with mock.patch("app.dashboard.importlib.import_module") as import_module:
+            import_module.side_effect = [cv2_mock, rr_mock]
+            with mock.patch("app.dashboard.threading.Thread") as thread_cls:
+                video_thread = mock.Mock()
+                state_thread = mock.Mock()
+                thread_cls.side_effect = [video_thread, state_thread]
+                dashboard.start()
+                dashboard.stop()
+
+        rr_mock.init.assert_called_once()
+        video_thread.start.assert_called_once()
+        state_thread.start.assert_called_once()
+
+    def test_apply_opencv_log_level(self) -> None:
+        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        cv2_mock = mock.Mock()
+        logging_mock = mock.Mock()
+        cv2_mock.utils.logging = logging_mock
+        logging_mock.LOG_LEVEL_SILENT = 0
+        dashboard._cv2 = cv2_mock
+        dashboard._apply_opencv_log_level()
+        logging_mock.setLogLevel.assert_called_once_with(0)
+
+    def test_log_scalar_with_scalars_fallback(self) -> None:
+        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        rr_mock = mock.Mock()
+        rr_mock.Scalar = None
+        del rr_mock.Scalar
+        dashboard._rr = rr_mock
+        dashboard._log_scalar("drone/state/bat", 90.0)
+        rr_mock.Scalars.assert_called_once_with([90.0])
+        rr_mock.log.assert_called_once()
+
+    def test_set_time_now_uses_set_time(self) -> None:
+        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        rr_mock = mock.Mock()
+        dashboard._rr = rr_mock
+        dashboard._set_time_now("time")
+        rr_mock.set_time.assert_called_once()
 
 
 class FlightLoggerTest(unittest.TestCase):
     """Tests for flight session log lifecycle."""
 
     def test_start_stop_and_retention(self) -> None:
-        """Creates logs and prunes old session directories."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             video = mock.Mock()

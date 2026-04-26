@@ -3,249 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import importlib
-import json
 import socket
-import subprocess
-import sys
-import time
 from pathlib import Path
 
+from app.dashboard import RerunDashboard
 from infra.flight_logging import FlightLogConfig, FlightLogger
 from infra.tello import TelloConfig, TelloStateReceiver, TelloTransport, build_sdk_command
-
-
-def build_video_stream_url(video_port: int) -> str:
-    """Build TELLO video stream URL.
-
-    Args:
-        video_port: Local UDP port to receive TELLO video.
-
-    Returns:
-        Stream URL passed to OpenCV VideoCapture.
-    """
-    return f"udp://0.0.0.0:{video_port}"
-
-
-class VideoWindow:
-    """Handle launching and controlling OpenCV video worker process."""
-
-    def __init__(self, video_port: int, enable_display: bool = True) -> None:
-        """Initialize video worker launcher.
-
-        Args:
-            video_port: Local UDP port to receive TELLO video.
-            enable_display: Whether the worker should show display window.
-        """
-        self._video_port = video_port
-        self._enable_display = enable_display
-        self._control_port = _reserve_local_udp_port()
-        self._process: subprocess.Popen[bytes] | None = None
-        self._control_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    def start(self) -> None:
-        """Start OpenCV video worker process.
-
-        Raises:
-            RuntimeError: If OpenCV package is unavailable.
-        """
-        try:
-            importlib.import_module("cv2")
-        except ModuleNotFoundError as error:
-            raise RuntimeError(
-                "opencv-python is not installed. Install it to show TELLO stream window."
-            ) from error
-
-        self._process = subprocess.Popen(
-            build_video_worker_command(
-                video_port=self._video_port,
-                control_port=self._control_port,
-                enable_display=self._enable_display,
-            ),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-    def start_recording(self, output_path: Path) -> None:
-        """Request video recording start for current stream.
-
-        Args:
-            output_path: Target file path for recorded video.
-        """
-        payload = {"type": "start_record", "path": str(output_path)}
-        self._send_control(payload)
-
-    def stop_recording(self) -> None:
-        """Request video recording stop."""
-        self._send_control({"type": "stop_record"})
-
-    def stop(self) -> None:
-        """Stop video worker process if running."""
-        self._send_control({"type": "shutdown"})
-        if self._process is None:
-            self._control_sock.close()
-            return
-        if self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-        self._process = None
-        self._control_sock.close()
-
-    def _send_control(self, payload: dict[str, str]) -> None:
-        """Send control payload to video worker.
-
-        Args:
-            payload: JSON serializable control payload.
-        """
-        message = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-        try:
-            self._control_sock.sendto(message, ("127.0.0.1", self._control_port))
-        except OSError:
-            pass
-
-
-def _reserve_local_udp_port() -> int:
-    """Reserve and return an available local UDP port.
-
-    Returns:
-        Available UDP port number.
-    """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return int(port)
-
-
-def build_video_worker_command(video_port: int, control_port: int, enable_display: bool) -> list[str]:
-    """Build command list to launch OpenCV video worker subprocess.
-
-    Args:
-        video_port: Local UDP port to receive TELLO video.
-        control_port: UDP port for worker control messages.
-        enable_display: Whether worker should show window.
-
-    Returns:
-        Subprocess command list.
-    """
-    command = [
-        sys.executable,
-        "-m",
-        "infra.tello_cli",
-        "--video-worker-only",
-        "--video-port",
-        str(video_port),
-        "--control-port",
-        str(control_port),
-    ]
-    if not enable_display:
-        command.append("--disable-display")
-    return command
-
-
-def run_video_worker(video_port: int, control_port: int, enable_display: bool) -> int:
-    """Run OpenCV video worker in foreground.
-
-    Args:
-        video_port: Local UDP port to receive TELLO video.
-        control_port: UDP port for worker control messages.
-        enable_display: Whether worker should show window.
-
-    Returns:
-        Process exit code.
-    """
-    cv2 = importlib.import_module("cv2")
-    stream_url = build_video_stream_url(video_port)
-    capture_backend = getattr(cv2, "CAP_FFMPEG", 0)
-    cap = cv2.VideoCapture(stream_url, capture_backend)
-
-    if not cap.isOpened():
-        print("Video error: failed to open TELLO stream.")
-        return 1
-
-    control_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    control_sock.bind(("127.0.0.1", control_port))
-    control_sock.settimeout(0.001)
-
-    window_name = "TELLO Stream"
-    created_window = False
-    writer = None
-    pending_record_path: Path | None = None
-
-    try:
-        while True:
-            worker_command = _recv_worker_command(control_sock)
-            if worker_command is not None:
-                command_type = worker_command.get("type")
-                if command_type == "shutdown":
-                    break
-                if command_type == "stop_record":
-                    if writer is not None:
-                        writer.release()
-                        writer = None
-                    pending_record_path = None
-                if command_type == "start_record":
-                    if writer is not None:
-                        writer.release()
-                        writer = None
-                    pending_record_path = Path(worker_command["path"])
-
-            ok, frame = cap.read()
-            if not ok:
-                time.sleep(0.01)
-                continue
-
-            if pending_record_path is not None and writer is None:
-                fps = cap.get(getattr(cv2, "CAP_PROP_FPS", 5))
-                if fps <= 0:
-                    fps = 30.0
-                height, width = frame.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(str(pending_record_path), fourcc, fps, (width, height))
-
-            if writer is not None:
-                writer.write(frame)
-
-            if enable_display:
-                if not created_window:
-                    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                    created_window = True
-                cv2.imshow(window_name, frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key in (27, ord("q")):
-                    break
-    finally:
-        cap.release()
-        control_sock.close()
-        if writer is not None:
-            writer.release()
-        if created_window:
-            cv2.destroyWindow(window_name)
-    return 0
-
-
-def _recv_worker_command(control_sock: socket.socket) -> dict[str, str] | None:
-    """Receive one worker command payload if available.
-
-    Args:
-        control_sock: Bound UDP socket for worker control.
-
-    Returns:
-        Parsed command payload or None.
-    """
-    try:
-        data, _ = control_sock.recvfrom(4096)
-    except socket.timeout:
-        return None
-    except OSError:
-        return None
-    try:
-        return json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
 
 
 def print_help() -> None:
@@ -360,11 +123,6 @@ def parse_args() -> argparse.Namespace:
         help="local UDP port for TELLO video stream (default: 11111)",
     )
     parser.add_argument(
-        "--no-video",
-        action="store_true",
-        help="disable video stream window on startup",
-    )
-    parser.add_argument(
         "--log-dir",
         default="logs",
         help="root directory for flight logs (default: logs)",
@@ -382,20 +140,15 @@ def parse_args() -> argparse.Namespace:
         help="state sampling interval seconds while flying (default: 0.5)",
     )
     parser.add_argument(
-        "--video-worker-only",
-        action="store_true",
-        help=argparse.SUPPRESS,
+        "--dashboard-state-interval",
+        type=float,
+        default=0.2,
+        help="state plot interval seconds for dashboard (default: 0.2)",
     )
     parser.add_argument(
-        "--control-port",
-        type=int,
-        default=0,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--disable-display",
+        "--no-dashboard",
         action="store_true",
-        help=argparse.SUPPRESS,
+        help="disable rerun dashboard startup",
     )
     return parser.parse_args()
 
@@ -403,19 +156,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run TELLO CLI entrypoint."""
     args = parse_args()
-    if args.video_worker_only:
-        raise SystemExit(
-            run_video_worker(
-                video_port=args.video_port,
-                control_port=args.control_port,
-                enable_display=not args.disable_display,
-            )
-        )
 
     config = TelloConfig(host=args.host, port=args.port, local_port=args.local_port)
     transport = TelloTransport(config)
-    video_window = VideoWindow(video_port=args.video_port, enable_display=not args.no_video)
     state_receiver = TelloStateReceiver(port=args.state_port)
+    dashboard = RerunDashboard(
+        video_port=args.video_port,
+        state_provider=state_receiver.get_latest,
+        state_interval_sec=args.dashboard_state_interval,
+    )
 
     flight_logger = FlightLogger(
         config=FlightLogConfig(
@@ -424,7 +173,7 @@ def main() -> None:
             state_sample_interval_sec=args.state_sample_interval,
         ),
         state_provider=state_receiver.get_latest,
-        video_recorder=video_window,
+        video_recorder=dashboard,
     )
 
     try:
@@ -434,11 +183,11 @@ def main() -> None:
         stream_response = transport.send_command("streamon")
         print(f"streamon -> {stream_response}")
 
-        video_window.start()
-        if not args.no_video:
-            print("TELLO stream window started.")
-
         state_receiver.start()
+
+        if not args.no_dashboard:
+            dashboard.start()
+            print("Rerun dashboard started.")
 
         if args.command:
             sdk_command = build_sdk_command(args.command)
@@ -460,13 +209,13 @@ def main() -> None:
 
         run_interactive(transport, flight_logger)
     except RuntimeError as error:
-        print(f"Video error: {error}")
+        print(f"Dashboard error: {error}")
     finally:
         if flight_logger.session_active():
             flight_logger.stop_session()
 
+        dashboard.stop()
         state_receiver.stop()
-        video_window.stop()
 
         try:
             streamoff_response = transport.send_command("streamoff")

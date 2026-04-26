@@ -6,4 +6,5 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "opencv-python>=4.10.0",
+    "rerun-sdk>=0.22.1",
 ]

@@ -2,8 +2,8 @@
 
 ## TELLOをターミナルから操作する
 1. PCをTELLOのWi-Fiに接続
-2. `opencv-python` をインストールしておく（cv2）
-3. 対話モード起動（起動時に映像ストリーミングウィンドウを表示）
+2. `opencv-python` と `rerun-sdk` をインストールしておく
+3. 対話モード起動（起動時にRerunダッシュボードを開く）
 
 ```bash
 uv run main.py
@@ -42,10 +42,10 @@ tello> land
 uv run main.py --command "battery?"
 ```
 
-## 映像ウィンドウを出さない場合
+## ダッシュボードを開かない場合
 
 ```bash
-uv run main.py --no-video
+uv run main.py --no-dashboard
 ```
 
 ## ログ保存の設定例

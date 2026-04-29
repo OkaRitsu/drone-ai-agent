@@ -6,7 +6,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from main import run_interactive
+from main import (
+    _save_get_frame_log_base64,
+    config_from_args,
+    execute_command,
+    parse_args,
+    run_interactive,
+)
 from src.app.dashboard import PLOT_GROUPS, RerunDashboard, build_video_stream_url
 from src.infra.flight_logging import STATE_CSV_FIELDS, FlightLogConfig, FlightLogger
 from src.infra.tello.commands import build_sdk_command
@@ -78,15 +84,22 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("yaw", PLOT_GROUPS["attitude_deg"])
 
     def test_start_raises_when_rerun_not_installed(self) -> None:
-        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        dashboard = RerunDashboard(
+            video_port=11111, state_provider=lambda: (None, None)
+        )
 
         with mock.patch("src.app.dashboard.importlib.import_module") as import_module:
-            import_module.side_effect = [object(), ModuleNotFoundError("No module named 'rerun'")]
+            import_module.side_effect = [
+                object(),
+                ModuleNotFoundError("No module named 'rerun'"),
+            ]
             with self.assertRaises(RuntimeError):
                 dashboard.start()
 
     def test_start_and_stop(self) -> None:
-        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        dashboard = RerunDashboard(
+            video_port=11111, state_provider=lambda: (None, None)
+        )
 
         cv2_mock = mock.Mock()
         rr_mock = mock.Mock()
@@ -105,7 +118,9 @@ class DashboardTest(unittest.TestCase):
         state_thread.start.assert_called_once()
 
     def test_apply_opencv_log_level(self) -> None:
-        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        dashboard = RerunDashboard(
+            video_port=11111, state_provider=lambda: (None, None)
+        )
         cv2_mock = mock.Mock()
         logging_mock = mock.Mock()
         cv2_mock.utils.logging = logging_mock
@@ -115,7 +130,9 @@ class DashboardTest(unittest.TestCase):
         logging_mock.setLogLevel.assert_called_once_with(0)
 
     def test_log_scalar_with_scalars_fallback(self) -> None:
-        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        dashboard = RerunDashboard(
+            video_port=11111, state_provider=lambda: (None, None)
+        )
         rr_mock = mock.Mock()
         rr_mock.Scalar = None
         del rr_mock.Scalar
@@ -125,7 +142,9 @@ class DashboardTest(unittest.TestCase):
         rr_mock.log.assert_called_once()
 
     def test_set_time_now_uses_set_time(self) -> None:
-        dashboard = RerunDashboard(video_port=11111, state_provider=lambda: (None, None))
+        dashboard = RerunDashboard(
+            video_port=11111, state_provider=lambda: (None, None)
+        )
         rr_mock = mock.Mock()
         dashboard._rr = rr_mock
         dashboard._set_time_now("time")
@@ -193,6 +212,119 @@ class InteractiveLoggingTest(unittest.TestCase):
             status="error",
         )
         flight_logger.stop_session.assert_not_called()
+
+
+class KeepaliveControlTest(unittest.TestCase):
+    """Tests for keepalive lifecycle integrated with command execution."""
+
+    def test_takeoff_ok_starts_keepalive(self) -> None:
+        transport = mock.Mock()
+        transport.send_command.return_value = "ok"
+
+        flight_logger = mock.Mock()
+        flight_logger.session_active.side_effect = [False, True]
+        flight_logger.start_session.return_value = Path("logs/20260426_000000")
+
+        keepalive = mock.Mock()
+        execute_command(
+            transport=transport,
+            flight_logger=flight_logger,
+            command="takeoff",
+            keepalive=keepalive,
+        )
+
+        keepalive.mark_activity.assert_called_once()
+        keepalive.start.assert_called_once()
+        keepalive.stop.assert_not_called()
+
+    def test_land_ok_stops_keepalive_even_without_active_log_session(self) -> None:
+        transport = mock.Mock()
+        transport.send_command.return_value = "ok"
+
+        flight_logger = mock.Mock()
+        flight_logger.session_active.side_effect = [False, False]
+        keepalive = mock.Mock()
+
+        execute_command(
+            transport=transport,
+            flight_logger=flight_logger,
+            command="land",
+            keepalive=keepalive,
+        )
+
+        keepalive.mark_activity.assert_called_once()
+        keepalive.stop.assert_called_once()
+        keepalive.start.assert_not_called()
+
+
+class TelloCliEntrypointTest(unittest.TestCase):
+    """Tests for application entrypoint argument handling."""
+
+    def test_config_from_args_maps_shared_options(self) -> None:
+        args = parse_args(
+            [
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "9999",
+                "--local-port",
+                "9998",
+                "--state-port",
+                "9997",
+                "--video-port",
+                "9996",
+                "--log-dir",
+                "tmp-logs",
+                "--max-log-sessions",
+                "3",
+                "--state-sample-interval",
+                "0.1",
+                "--dashboard-state-interval",
+                "0.05",
+                "--no-dashboard",
+                "--mcp-http",
+                "--mcp-host",
+                "0.0.0.0",
+                "--mcp-port",
+                "18000",
+                "--mcp-path",
+                "/drone-mcp",
+                "--keepalive-interval",
+                "9.5",
+                "--keepalive-command",
+                "time?",
+            ]
+        )
+
+        config = config_from_args(args)
+
+        self.assertEqual(config.host, "127.0.0.1")
+        self.assertEqual(config.command_port, 9999)
+        self.assertEqual(config.local_command_port, 9998)
+        self.assertEqual(config.state_port, 9997)
+        self.assertEqual(config.video_port, 9996)
+        self.assertEqual(config.log_dir, Path("tmp-logs"))
+        self.assertEqual(config.max_log_sessions, 3)
+        self.assertEqual(config.state_sample_interval_sec, 0.1)
+        self.assertEqual(config.dashboard_state_interval_sec, 0.05)
+        self.assertFalse(config.dashboard_enabled)
+        self.assertTrue(config.mcp_http_enabled)
+        self.assertEqual(config.mcp_host, "0.0.0.0")
+        self.assertEqual(config.mcp_port, 18000)
+        self.assertEqual(config.mcp_path, "/drone-mcp")
+        self.assertEqual(config.keepalive_interval_sec, 9.5)
+        self.assertEqual(config.keepalive_command, "time?")
+
+
+class GetFrameLogSaveTest(unittest.TestCase):
+    """Tests for get_frame logging helper in main runtime."""
+
+    def test_save_get_frame_log_base64_writes_jpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = _save_get_frame_log_base64(Path(tmpdir), "aGVsbG8=")
+            self.assertTrue(output.exists())
+            self.assertEqual(output.suffix, ".jpg")
+            self.assertEqual(output.read_bytes(), b"hello")
 
 
 if __name__ == "__main__":

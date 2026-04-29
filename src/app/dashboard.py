@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import os
 import threading
@@ -64,6 +65,9 @@ class RerunDashboard:
         self._writer_lock = threading.Lock()
         self._recording_path: Path | None = None
         self._state_tick = 0
+        self._latest_frame_bgr: Any | None = None
+        self._latest_frame_ts: float | None = None
+        self._frame_lock = threading.Lock()
 
     def start(self) -> None:
         """Start dashboard and spawn viewer.
@@ -101,7 +105,9 @@ class RerunDashboard:
     def _send_default_blueprint(self) -> None:
         """Send default dashboard layout with separated motion/status views."""
         assert self._rr is not None
-        if not hasattr(self._rr, "blueprint") or not hasattr(self._rr, "send_blueprint"):
+        if not hasattr(self._rr, "blueprint") or not hasattr(
+            self._rr, "send_blueprint"
+        ):
             return
 
         try:
@@ -176,6 +182,34 @@ class RerunDashboard:
                 self._writer = None
             self._recording_path = None
 
+    def get_latest_jpeg_base64(self) -> dict[str, Any] | None:
+        """Get latest dashboard frame as base64 JPEG payload.
+
+        Returns:
+            Frame payload, or None when no frame is available yet.
+        """
+        if self._cv2 is None:
+            return None
+
+        with self._frame_lock:
+            if self._latest_frame_bgr is None or self._latest_frame_ts is None:
+                return None
+            frame = self._latest_frame_bgr.copy()
+            frame_ts = self._latest_frame_ts
+
+        ok, encoded = self._cv2.imencode(".jpg", frame)
+        if not ok:
+            return None
+
+        height, width = frame.shape[:2]
+        return {
+            "mime_type": "image/jpeg",
+            "width": int(width),
+            "height": int(height),
+            "timestamp_unix": frame_ts,
+            "data_base64": base64.b64encode(encoded.tobytes()).decode("ascii"),
+        }
+
     def _run_video_loop(self) -> None:
         """Video thread: decode TELLO stream, log image, optionally record."""
         assert self._cv2 is not None
@@ -194,6 +228,10 @@ class RerunDashboard:
                 if not ok:
                     time.sleep(0.01)
                     continue
+
+                with self._frame_lock:
+                    self._latest_frame_bgr = frame
+                    self._latest_frame_ts = time.time()
 
                 self._set_time_now("time")
                 rgb_frame = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)

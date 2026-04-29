@@ -11,5 +11,3 @@ wheels/
 
 # Runtime logs
 logs/
-
-.gemini/

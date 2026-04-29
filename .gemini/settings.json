@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "drone_ai_agent": {
+      "url": "http://127.0.0.1:8000/mcp",
+      "type": "http"
+    }
+  }
+}

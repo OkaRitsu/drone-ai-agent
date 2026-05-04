@@ -1,10 +1,10 @@
 ---
 name: drone-operator
-description: An AI agent that operates a drone to perform user-defined tasks, such as finding a specific object or navigating to a location.
+description: Use this skill to operate a drone to perform user-defined tasks, such as finding a specific object or navigating to a location.
 ---
 
 # Drone Operator
-このスキルは、ユーザーが定義したタスクを実行するためにドローンを操作するAIエージェントです。例えば、特定のオブジェクトを見つけたり、特定の場所にナビゲートしたりすることができます。
+ユーザーが定義したタスクを実行するためにドローンを操作するスキルです。
 
 ## Workflow
 1. ユーザーがタスクを定義します
@@ -12,10 +12,10 @@ description: An AI agent that operates a drone to perform user-defined tasks, su
   - ドローンに対する特定の動作を指示することもできますが、抽象的なタスクも受け付けます。
 2. エージェントがタスクを解析し、必要なアクションを計画します
   - タスクの内容に基づいて、ドローンがどのような行動を取るべきかを判断します。
-  - 必要に応じて、MCPを使用して、ドローンのカメラやセンサーから情報を収集します。
+  - 必要に応じて、MCPを使用して、ドローンのカメラやセンサーから情報を収``します。
   - ドローンが離陸後バッテリ消費を考慮し、効率的なルートを計画します。
 3. エージェントがドローンを離陸させ、タスクを実行します
   - バッテリの消費を考慮し、**思考時間を最小限に抑えてください**。
-  - ドローンが指定されたタスクを実行するために必要なアクションを実行します。
+  - ドローンで写真を撮ることができるので、積極的に活用してください。
+  - タスクを実行するために写真を利用することもできますが、思考時間が長くなりすぎないように注意してください。
   - タスクの進行状況をユーザーに報告し、必要に応じて追加の指示を受け付けます。
-  - タスクが完了したら、ドローンを安全に着陸させます。

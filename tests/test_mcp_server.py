@@ -9,7 +9,9 @@ import tempfile
 import unittest
 
 from src.mcp.server import (
-    _save_get_frame_log_bytes,
+    _append_mcp_io_log,
+    _list_take_a_photo_paths,
+    _save_take_a_photo_bytes,
     _tail_csv,
     build_mcp_app,
     config_from_args,
@@ -43,15 +45,51 @@ class TailCsvTest(unittest.TestCase):
             self.assertEqual(rows, [])
 
 
-class GetFrameLogTest(unittest.TestCase):
-    """Tests for get_frame image logging helper."""
+class TakeAPhotoLogTest(unittest.TestCase):
+    """Tests for take_a_photo image logging helper."""
 
-    def test_save_get_frame_log_bytes_writes_jpeg(self) -> None:
+    def test_save_take_a_photo_bytes_writes_jpeg(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            output = _save_get_frame_log_bytes(Path(tmpdir), b"jpeg-bytes")
+            output = _save_take_a_photo_bytes(Path(tmpdir), b"jpeg-bytes")
             self.assertTrue(output.exists())
             self.assertEqual(output.suffix, ".jpg")
             self.assertEqual(output.read_bytes(), b"jpeg-bytes")
+            self.assertEqual(output.parent.name, "take_a_photo")
+
+    def test_list_take_a_photo_paths_returns_sorted_jpg_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir) / "take_a_photo"
+            photo_dir.mkdir(parents=True, exist_ok=True)
+            second = photo_dir / "b.jpg"
+            first = photo_dir / "a.jpg"
+            ignored = photo_dir / "note.txt"
+            second.write_bytes(b"2")
+            first.write_bytes(b"1")
+            ignored.write_text("x", encoding="utf-8")
+
+            photos = _list_take_a_photo_paths(Path(tmpdir))
+            self.assertEqual(photos, [str(first.resolve()), str(second.resolve())])
+
+
+class McpIoLogTest(unittest.TestCase):
+    """Tests for MCP request/response logging helper."""
+
+    def test_append_mcp_io_log_writes_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _append_mcp_io_log(
+                log_root=Path(tmpdir),
+                tool_name="send_command",
+                request={"command": "takeoff"},
+                response={"status": "ok"},
+                status="ok",
+            )
+
+            log_path = Path(tmpdir) / "mcp_io" / "requests_and_responses.jsonl"
+            self.assertTrue(log_path.exists())
+            payload = log_path.read_text(encoding="utf-8").strip()
+            self.assertIn('"tool": "send_command"', payload)
+            self.assertIn('"command": "takeoff"', payload)
+            self.assertIn('"status": "ok"', payload)
 
 
 class McpEntrypointTest(unittest.TestCase):
@@ -111,10 +149,9 @@ class McpEntrypointTest(unittest.TestCase):
     "fastmcp is not installed",
 )
 class McpFrameToolTest(unittest.TestCase):
-    """Tests for MCP get_frame tool response types."""
+    """Tests for MCP camera tools response types."""
 
-    def test_get_frame_returns_fastmcp_image_when_saved_file_exists(self) -> None:
-        from fastmcp.utilities.types import Image
+    def test_take_a_photo_returns_saved_filename_when_file_exists(self) -> None:
         tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(tmpdir.cleanup)
         image_path = Path(tmpdir.name) / "frame.jpg"
@@ -130,8 +167,17 @@ class McpFrameToolTest(unittest.TestCase):
             def get_state(self) -> dict[str, str]:
                 return {}
 
-            def get_frame(self) -> Path:
+            def take_a_photo(self) -> Path:
                 return image_path
+
+            def load_image(self, filename: str) -> Path | dict[str, str | bool]:
+                if filename == image_path.name:
+                    return image_path
+                return {
+                    "ok": False,
+                    "error": "image_not_found",
+                    "message": f"Image not found: {filename}",
+                }
 
             def send_command(self, command: str) -> dict[str, str]:
                 return {"command": command}
@@ -150,16 +196,19 @@ class McpFrameToolTest(unittest.TestCase):
 
         async def run_test() -> None:
             app = build_mcp_app(RuntimeStub())
-            tool = await app.get_tool("get_frame")
+            tool = await app.get_tool("take_a_photo")
             result = tool.fn()
-            self.assertIsInstance(result, Image)
-            image_content = result.to_image_content()
-            self.assertEqual(image_content.type, "image")
-            self.assertEqual(image_content.mimeType, "image/jpeg")
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["ok"], True)
+            self.assertEqual(result["filename"], "frame.jpg")
+            self.assertEqual(result["path"], str(image_path))
 
         asyncio.run(run_test())
 
-    def test_get_frame_returns_error_payload_when_unavailable(self) -> None:
+    def test_take_a_photo_returns_error_payload_when_unavailable(self) -> None:
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+
         class RuntimeStub:
             def start(self) -> None:
                 pass
@@ -170,11 +219,18 @@ class McpFrameToolTest(unittest.TestCase):
             def get_state(self) -> dict[str, str]:
                 return {}
 
-            def get_frame(self) -> dict[str, str | bool]:
+            def take_a_photo(self) -> dict[str, str | bool]:
                 return {
                     "ok": False,
                     "error": "frame_unavailable",
                     "message": "No frame has been received yet.",
+                }
+
+            def load_image(self, filename: str) -> dict[str, str | bool]:
+                return {
+                    "ok": False,
+                    "error": "image_not_found",
+                    "message": f"Image not found: {filename}",
                 }
 
             def send_command(self, command: str) -> dict[str, str]:
@@ -194,11 +250,62 @@ class McpFrameToolTest(unittest.TestCase):
 
         async def run_test() -> None:
             app = build_mcp_app(RuntimeStub())
-            tool = await app.get_tool("get_frame")
+            tool = await app.get_tool("take_a_photo")
             result = tool.fn()
             self.assertIsInstance(result, dict)
             self.assertEqual(result["ok"], False)
             self.assertEqual(result["error"], "frame_unavailable")
+
+        asyncio.run(run_test())
+
+    def test_load_image_returns_fastmcp_image_when_found(self) -> None:
+        from fastmcp.utilities.types import Image
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        image_path = Path(tmpdir.name) / "snapshot.jpg"
+        image_path.write_bytes(b"jpeg-bytes")
+
+        class RuntimeStub:
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> None:
+                pass
+
+            def get_state(self) -> dict[str, str]:
+                return {}
+
+            def take_a_photo(self) -> Path:
+                return image_path
+
+            def load_image(self, filename: str) -> Path | dict[str, str]:
+                if filename == image_path.name:
+                    return image_path
+                return {"ok": False, "error": "image_not_found"}
+
+            def send_command(self, command: str) -> dict[str, str]:
+                return {"command": command}
+
+            def get_flight_log(
+                self,
+                session_id: str | None = None,
+                command_limit: int = 200,
+                state_limit: int = 200,
+            ) -> dict[str, str | int | None]:
+                return {
+                    "session_id": session_id,
+                    "command_limit": command_limit,
+                    "state_limit": state_limit,
+                }
+
+        async def run_test() -> None:
+            app = build_mcp_app(RuntimeStub())
+            tool = await app.get_tool("load_image")
+            result = tool.fn(filename=image_path.name)
+            self.assertIsInstance(result, Image)
+            image_content = result.to_image_content()
+            self.assertEqual(image_content.mimeType, "image/jpeg")
 
         asyncio.run(run_test())
 

@@ -229,8 +229,8 @@ class TelloMcpRuntime:
             "has_state": parsed is not None,
         }
 
-    def get_frame(self) -> Path | dict[str, Any]:
-        """Get latest camera frame as JPEG bytes.
+    def take_a_photo(self) -> Path | dict[str, Any]:
+        """Save latest camera frame as a JPEG file.
 
         Returns:
             Saved JPEG path, or an error payload when frame is unavailable.
@@ -242,7 +242,33 @@ class TelloMcpRuntime:
                 "error": "frame_unavailable",
                 "message": "No frame has been received yet.",
             }
-        return _save_get_frame_log_bytes(self._config.log_dir, jpeg_bytes)
+        return _save_take_a_photo_bytes(self._config.log_dir, jpeg_bytes)
+
+    def load_image(self, filename: str) -> Path | dict[str, Any]:
+        """Load a photo saved by take_a_photo.
+
+        Args:
+            filename: File name under ``<log_dir>/take_a_photo``.
+
+        Returns:
+            Resolved image path or an error payload when unavailable.
+        """
+        if not filename:
+            return {
+                "ok": False,
+                "error": "invalid_filename",
+                "message": "filename must not be empty.",
+            }
+
+        image_dir = self._config.log_dir / "take_a_photo"
+        candidate = (image_dir / filename).resolve()
+        if candidate.parent != image_dir.resolve() or not candidate.exists():
+            return {
+                "ok": False,
+                "error": "image_not_found",
+                "message": f"Image not found: {filename}",
+            }
+        return candidate
 
     def send_command(self, command: str) -> dict[str, Any]:
         """Send a TELLO SDK command.
@@ -335,6 +361,7 @@ class TelloMcpRuntime:
             "metadata": metadata,
             "commands": _tail_csv(commands_path, command_limit),
             "state": _tail_csv(state_path, state_limit),
+            "photos": _list_take_a_photo_paths(self._config.log_dir),
         }
 
     def _resolve_session_dir(self, session_id: str | None) -> Path | None:
@@ -372,8 +399,11 @@ class McpRuntimeProtocol(Protocol):
     def get_state(self) -> dict[str, Any]:
         """Get latest telemetry state."""
 
-    def get_frame(self) -> Path | dict[str, Any]:
-        """Get latest camera frame."""
+    def take_a_photo(self) -> Path | dict[str, Any]:
+        """Save latest camera frame."""
+
+    def load_image(self, filename: str) -> Path | dict[str, Any]:
+        """Load one saved image."""
 
     def send_command(self, command: str) -> dict[str, Any]:
         """Send one drone command."""
@@ -407,22 +437,112 @@ def _tail_csv(path: Path, limit: int) -> list[dict[str, str]]:
     return rows[-limit:]
 
 
-def _save_get_frame_log_bytes(log_root: Path, jpeg_bytes: bytes) -> Path:
-    """Persist one get_frame response image as a log artifact.
+def _save_take_a_photo_bytes(log_root: Path, jpeg_bytes: bytes) -> Path:
+    """Persist one take_a_photo response image as a log artifact.
 
     Args:
         log_root: Root log directory.
-        jpeg_bytes: JPEG image bytes returned by get_frame.
+        jpeg_bytes: JPEG image bytes returned by take_a_photo.
 
     Returns:
         Saved image path.
     """
-    save_dir = log_root / "get_frame"
+    save_dir = log_root / "take_a_photo"
     save_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
     output_path = save_dir / filename
     output_path.write_bytes(jpeg_bytes)
     return output_path
+
+
+def _list_take_a_photo_paths(log_root: Path) -> list[str]:
+    """List saved photo file paths under take_a_photo directory.
+
+    Args:
+        log_root: Root log directory.
+
+    Returns:
+        Sorted absolute image path list.
+    """
+    photo_dir = log_root / "take_a_photo"
+    if not photo_dir.exists():
+        return []
+    return sorted(
+        str(path.resolve())
+        for path in photo_dir.iterdir()
+        if path.is_file() and path.suffix.lower() == ".jpg"
+    )
+
+
+def _sanitize_for_log(value: Any) -> Any:
+    """Convert runtime values into JSON serializable payloads.
+
+    Args:
+        value: Arbitrary runtime value.
+
+    Returns:
+        JSON-serializable representation.
+    """
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): _sanitize_for_log(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_log(v) for v in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_log(v) for v in value]
+    return str(value)
+
+
+def _append_mcp_io_log(
+    log_root: Path,
+    tool_name: str,
+    request: dict[str, Any],
+    response: Any,
+    status: str,
+) -> None:
+    """Append one MCP request/response record.
+
+    Args:
+        log_root: MCP log root directory.
+        tool_name: Invoked MCP tool name.
+        request: Tool request payload.
+        response: Tool response payload.
+        status: Execution status string.
+    """
+    log_dir = log_root / "mcp_io"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "requests_and_responses.jsonl"
+    record = {
+        "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+        "tool": tool_name,
+        "request": _sanitize_for_log(request),
+        "response": _sanitize_for_log(response),
+        "status": status,
+    }
+    with log_path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _resolve_runtime_log_root(runtime: Any) -> Path:
+    """Resolve runtime log root for MCP request/response logging.
+
+    Args:
+        runtime: Runtime object used by MCP app.
+
+    Returns:
+        Resolved log root path.
+    """
+    config = getattr(runtime, "_config", None)
+    if config is not None and hasattr(config, "log_dir"):
+        return Path(config.log_dir)
+
+    log_dir = getattr(runtime, "_log_dir", None)
+    if log_dir is not None:
+        return Path(log_dir)
+    return Path("logs")
 
 
 def build_mcp_app(runtime: McpRuntimeProtocol) -> Any:
@@ -443,24 +563,71 @@ def build_mcp_app(runtime: McpRuntimeProtocol) -> Any:
         ) from error
 
     mcp = FastMCP("drone_ai_agent")
+    log_root = _resolve_runtime_log_root(runtime)
+
+    def _run_tool(tool_name: str, request: dict[str, Any], fn: Any) -> Any:
+        """Execute MCP tool and persist request/response log."""
+        try:
+            response = fn()
+            _append_mcp_io_log(
+                log_root=log_root,
+                tool_name=tool_name,
+                request=request,
+                response=response,
+                status="ok",
+            )
+            return response
+        except Exception as error:
+            _append_mcp_io_log(
+                log_root=log_root,
+                tool_name=tool_name,
+                request=request,
+                response={"error": str(error)},
+                status="error",
+            )
+            raise
 
     @mcp.tool()
     def get_state() -> dict[str, Any]:
         """Get current drone state telemetry."""
-        return runtime.get_state()
+        return _run_tool("get_state", {}, runtime.get_state)
 
     @mcp.tool()
-    def get_frame() -> Any:
-        """Get the latest camera frame from drone."""
-        frame = runtime.get_frame()
-        if isinstance(frame, Path):
-            return Image(path=str(frame))
-        return frame
+    def take_a_photo() -> Any:
+        """Save the latest camera frame from drone as a JPEG image."""
+
+        def _impl() -> Any:
+            frame = runtime.take_a_photo()
+            if isinstance(frame, Path):
+                return {
+                    "ok": True,
+                    "filename": frame.name,
+                    "path": str(frame),
+                }
+            return frame
+
+        return _run_tool("take_a_photo", {}, _impl)
+
+    @mcp.tool()
+    def load_image(filename: str) -> Any:
+        """Load one saved image file by filename."""
+
+        def _impl() -> Any:
+            image_path = runtime.load_image(filename)
+            if isinstance(image_path, Path):
+                return Image(path=str(image_path))
+            return image_path
+
+        return _run_tool("load_image", {"filename": filename}, _impl)
 
     @mcp.tool()
     def send_command(command: str) -> dict[str, Any]:
         """Send one command to the drone."""
-        return runtime.send_command(command)
+        return _run_tool(
+            "send_command",
+            {"command": command},
+            lambda: runtime.send_command(command),
+        )
 
     @mcp.tool()
     def get_flight_log(
@@ -469,10 +636,18 @@ def build_mcp_app(runtime: McpRuntimeProtocol) -> Any:
         state_limit: int = 200,
     ) -> dict[str, Any]:
         """Get one flight log session."""
-        return runtime.get_flight_log(
-            session_id=session_id,
-            command_limit=command_limit,
-            state_limit=state_limit,
+        return _run_tool(
+            "get_flight_log",
+            {
+                "session_id": session_id,
+                "command_limit": command_limit,
+                "state_limit": state_limit,
+            },
+            lambda: runtime.get_flight_log(
+                session_id=session_id,
+                command_limit=command_limit,
+                state_limit=state_limit,
+            ),
         )
 
     return mcp

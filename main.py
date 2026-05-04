@@ -236,8 +236,8 @@ class MainMcpRuntimeAdapter:
             "has_state": parsed is not None,
         }
 
-    def get_frame(self) -> Path | dict[str, Any]:
-        """Get latest frame from dashboard decoder."""
+    def take_a_photo(self) -> Path | dict[str, Any]:
+        """Save latest frame from dashboard decoder."""
         payload = self._dashboard.get_latest_jpeg_base64()
         if payload is None:
             return {
@@ -246,6 +246,25 @@ class MainMcpRuntimeAdapter:
                 "message": "No frame has been received yet.",
             }
         return _save_get_frame_log_base64(self._log_dir, payload["data_base64"])
+
+    def load_image(self, filename: str) -> Path | dict[str, Any]:
+        """Load a saved photo by file name."""
+        if not filename:
+            return {
+                "ok": False,
+                "error": "invalid_filename",
+                "message": "filename must not be empty.",
+            }
+
+        image_dir = self._log_dir / "take_a_photo"
+        candidate = (image_dir / filename).resolve()
+        if candidate.parent != image_dir.resolve() or not candidate.exists():
+            return {
+                "ok": False,
+                "error": "image_not_found",
+                "message": f"Image not found: {filename}",
+            }
+        return candidate
 
     def send_command(self, command: str) -> dict[str, Any]:
         """Send one command via shared transport."""
@@ -286,6 +305,7 @@ class MainMcpRuntimeAdapter:
             "metadata": metadata,
             "commands": _tail_csv(commands_path, command_limit),
             "state": _tail_csv(state_path, state_limit),
+            "photos": _list_take_a_photo_paths(self._log_dir),
         }
 
     def _resolve_session_dir(self, session_id: str | None) -> Path | None:
@@ -323,7 +343,7 @@ def _tail_csv(path: Path, limit: int) -> list[dict[str, str]]:
 
 
 def _save_get_frame_log_base64(log_root: Path, data_base64: str) -> Path:
-    """Persist one get_frame response image as a log artifact.
+    """Persist one photo response image as a log artifact.
 
     Args:
         log_root: Root log directory.
@@ -332,12 +352,24 @@ def _save_get_frame_log_base64(log_root: Path, data_base64: str) -> Path:
     Returns:
         Saved image path.
     """
-    save_dir = log_root / "get_frame"
+    save_dir = log_root / "take_a_photo"
     save_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
     output_path = save_dir / filename
     output_path.write_bytes(base64.b64decode(data_base64))
     return output_path
+
+
+def _list_take_a_photo_paths(log_root: Path) -> list[str]:
+    """List saved photo file paths under take_a_photo directory."""
+    photo_dir = log_root / "take_a_photo"
+    if not photo_dir.exists():
+        return []
+    return sorted(
+        str(path.resolve())
+        for path in photo_dir.iterdir()
+        if path.is_file() and path.suffix.lower() == ".jpg"
+    )
 
 
 def run_mcp_http_server(

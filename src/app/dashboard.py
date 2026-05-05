@@ -42,6 +42,7 @@ class RerunDashboard:
         video_port: int,
         state_provider: Callable[[], tuple[str | None, dict[str, Any] | None]],
         state_interval_sec: float = 0.2,
+        video_reconnect_interval_sec: float = 0.5,
     ) -> None:
         """Initialize dashboard runtime.
 
@@ -49,10 +50,12 @@ class RerunDashboard:
             video_port: Local UDP port for TELLO video stream.
             state_provider: Callable returning latest raw and parsed state.
             state_interval_sec: Polling interval for dashboard state plots.
+            video_reconnect_interval_sec: Delay before reopening camera stream.
         """
         self._video_port = video_port
         self._state_provider = state_provider
         self._state_interval_sec = state_interval_sec
+        self._video_reconnect_interval_sec = video_reconnect_interval_sec
 
         self._cv2 = None
         self._rr = None
@@ -217,16 +220,23 @@ class RerunDashboard:
 
         stream_url = build_video_stream_url(self._video_port)
         capture_backend = getattr(self._cv2, "CAP_FFMPEG", 0)
-        cap = self._cv2.VideoCapture(stream_url, capture_backend)
-        if not cap.isOpened():
-            print("Video error: failed to open TELLO stream.")
-            return
+        cap = None
 
         try:
             while not self._stop_event.is_set():
+                if cap is None:
+                    cap = self._cv2.VideoCapture(stream_url, capture_backend)
+                    if not cap.isOpened():
+                        cap.release()
+                        cap = None
+                        time.sleep(self._video_reconnect_interval_sec)
+                        continue
+
                 ok, frame = cap.read()
                 if not ok:
-                    time.sleep(0.01)
+                    cap.release()
+                    cap = None
+                    time.sleep(self._video_reconnect_interval_sec)
                     continue
 
                 with self._frame_lock:
@@ -239,7 +249,8 @@ class RerunDashboard:
 
                 self._write_video_frame_if_needed(frame)
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
 
     def _run_state_loop(self) -> None:
         """State thread: poll latest telemetry and log scalar series."""

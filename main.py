@@ -21,6 +21,7 @@ from src.infra.tello import (
     TelloStateReceiver,
     TelloTransport,
     build_sdk_command,
+    reconnect_sdk_session,
 )
 from src.mcp.server import run_server
 
@@ -74,6 +75,7 @@ def print_help() -> None:
     print("  cw/ccw <1-360>")
     print("  speed <10-100> | speed? | battery? | time?")
     print("  flip <l|r|f|b>")
+    print("  reconnect  # reconnect after battery swap/reboot")
     print("  raw <sdk command>  # send raw TELLO SDK command")
     print("  help | quit")
 
@@ -143,6 +145,19 @@ def execute_command(
     Returns:
         Command execution payload compatible with MCP response format.
     """
+    if command.strip().lower() == "reconnect":
+        if keepalive is not None:
+            keepalive.stop()
+        ok, message = reconnect_sdk_session(transport)
+        return {
+            "command": command,
+            "sdk_command": "reconnect",
+            "status": "ok" if ok else "error",
+            "response": message,
+            "session_started": None,
+            "session_saved": False,
+        }
+
     sdk_command = build_sdk_command(command)
     session_started = None
     if sdk_command == "takeoff" and not flight_logger.session_active():
@@ -155,8 +170,17 @@ def execute_command(
         response = transport.send_command(sdk_command)
         status = "ok"
     except socket.timeout:
-        response = "timeout"
-        status = "error"
+        ok, reconnect_message = reconnect_sdk_session(transport)
+        if ok:
+            try:
+                response = transport.send_command(sdk_command)
+                status = "ok"
+            except socket.timeout:
+                response = "timeout"
+                status = "error"
+        else:
+            response = f"timeout ({reconnect_message})"
+            status = "error"
 
     if flight_logger.session_active():
         flight_logger.log_command(

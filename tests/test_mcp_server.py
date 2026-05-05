@@ -7,8 +7,10 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from src.mcp.server import (
+    TelloMcpRuntime,
     _append_mcp_io_log,
     _list_take_a_photo_paths,
     _save_take_a_photo_bytes,
@@ -142,6 +144,26 @@ class McpEntrypointTest(unittest.TestCase):
 
         run_stdio_server.assert_called_once()
         self.assertEqual(run_stdio_server.call_args.args[0].host, "127.0.0.1")
+
+
+class McpRuntimeReconnectTest(unittest.TestCase):
+    """Tests for TELLO MCP runtime reconnect behavior."""
+
+    def test_send_command_reconnect_calls_command_and_streamon(self) -> None:
+        runtime = TelloMcpRuntime.__new__(TelloMcpRuntime)
+        runtime._transport = mock.Mock()
+        runtime._transport.send_command.side_effect = ["ok", "ok", "ok"]
+        runtime._keepalive = mock.Mock()
+        runtime._flight_logger = mock.Mock()
+
+        result = runtime.send_command("reconnect")
+
+        self.assertEqual(result["status"], "ok")
+        runtime._keepalive.stop.assert_called_once()
+        self.assertEqual(
+            runtime._transport.send_command.call_args_list,
+            [mock.call("command"), mock.call("streamoff"), mock.call("streamon")],
+        )
 
 
 @unittest.skipUnless(

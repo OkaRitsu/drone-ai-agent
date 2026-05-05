@@ -208,7 +208,7 @@ class InteractiveLoggingTest(unittest.TestCase):
         flight_logger.start_session.assert_called_once()
         flight_logger.log_command.assert_called_once_with(
             command="takeoff",
-            response="timeout",
+            response="timeout (reconnect timeout)",
             status="error",
         )
         flight_logger.stop_session.assert_not_called()
@@ -255,6 +255,62 @@ class KeepaliveControlTest(unittest.TestCase):
         keepalive.mark_activity.assert_called_once()
         keepalive.stop.assert_called_once()
         keepalive.start.assert_not_called()
+
+    def test_reconnect_command_reinitializes_sdk_session(self) -> None:
+        transport = mock.Mock()
+        transport.send_command.side_effect = ["ok", "ok", "ok"]
+
+        flight_logger = mock.Mock()
+        keepalive = mock.Mock()
+
+        result = execute_command(
+            transport=transport,
+            flight_logger=flight_logger,
+            command="reconnect",
+            keepalive=keepalive,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["response"], "reconnected")
+        keepalive.stop.assert_called_once()
+        self.assertEqual(
+            transport.send_command.call_args_list,
+            [mock.call("command"), mock.call("streamoff"), mock.call("streamon")],
+        )
+
+    def test_timeout_auto_recovers_with_reconnect_then_retries(self) -> None:
+        transport = mock.Mock()
+        transport.send_command.side_effect = [
+            socket.timeout(),
+            "ok",
+            "ok",
+            "ok",
+            "ok",
+        ]
+
+        flight_logger = mock.Mock()
+        flight_logger.session_active.return_value = False
+        keepalive = mock.Mock()
+
+        result = execute_command(
+            transport=transport,
+            flight_logger=flight_logger,
+            command="battery?",
+            keepalive=keepalive,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["response"], "ok")
+        self.assertEqual(
+            transport.send_command.call_args_list,
+            [
+                mock.call("battery?"),
+                mock.call("command"),
+                mock.call("streamoff"),
+                mock.call("streamon"),
+                mock.call("battery?"),
+            ],
+        )
 
 
 class TelloCliEntrypointTest(unittest.TestCase):

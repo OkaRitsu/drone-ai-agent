@@ -19,6 +19,7 @@ from src.infra.tello import (
     TelloTransport,
     TelloVideoHub,
     build_sdk_command,
+    reconnect_sdk_session,
 )
 
 
@@ -279,6 +280,18 @@ class TelloMcpRuntime:
         Returns:
             Command execution result.
         """
+        if command.strip().lower() == "reconnect":
+            self._keepalive.stop()
+            ok, message = reconnect_sdk_session(self._transport)
+            return {
+                "command": command,
+                "sdk_command": "reconnect",
+                "status": "ok" if ok else "error",
+                "response": message,
+                "session_started": None,
+                "session_saved": False,
+            }
+
         sdk_command = build_sdk_command(command)
         session_started = None
         if sdk_command == "takeoff" and not self._flight_logger.session_active():
@@ -289,8 +302,17 @@ class TelloMcpRuntime:
             response = self._transport.send_command(sdk_command)
             status = "ok"
         except socket.timeout:
-            response = "timeout"
-            status = "error"
+            ok, reconnect_message = reconnect_sdk_session(self._transport)
+            if ok:
+                try:
+                    response = self._transport.send_command(sdk_command)
+                    status = "ok"
+                except socket.timeout:
+                    response = "timeout"
+                    status = "error"
+            else:
+                response = f"timeout ({reconnect_message})"
+                status = "error"
 
         if self._flight_logger.session_active():
             self._flight_logger.log_command(

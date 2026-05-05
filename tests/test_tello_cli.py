@@ -1,6 +1,7 @@
 """Unit tests for TELLO terminal command handling."""
 
 import socket
+import types
 from pathlib import Path
 import tempfile
 import unittest
@@ -149,6 +150,33 @@ class DashboardTest(unittest.TestCase):
         dashboard._rr = rr_mock
         dashboard._set_time_now("time")
         rr_mock.set_time.assert_called_once()
+
+    def test_send_default_blueprint_hides_state_raw_view(self) -> None:
+        dashboard = RerunDashboard(
+            video_port=11111, state_provider=lambda: (None, None)
+        )
+        text_document_view = mock.Mock(return_value=mock.Mock())
+        bp_mock = types.SimpleNamespace(
+            TimeSeriesView=mock.Mock(),
+            Spatial2DView=mock.Mock(),
+            TextDocumentView=text_document_view,
+            Horizontal=mock.Mock(),
+            Grid=mock.Mock(),
+            Vertical=mock.Mock(),
+            Blueprint=mock.Mock(return_value=mock.Mock()),
+        )
+        rr_mock = mock.Mock()
+        rr_mock.blueprint = bp_mock
+        dashboard._rr = rr_mock
+
+        dashboard._send_default_blueprint()
+
+        text_document_view.assert_called_once_with(
+            name="state_raw",
+            origin="/",
+            contents=["/drone/state/raw"],
+            visible=False,
+        )
 
 
 class FlightLoggerTest(unittest.TestCase):

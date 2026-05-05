@@ -135,6 +135,7 @@ class RerunDashboard:
                             name="state_raw",
                             origin="/",
                             contents=["/drone/state/raw"],
+                            visible=False,
                         ),
                     ),
                     bp.Grid(

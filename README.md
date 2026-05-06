@@ -4,6 +4,9 @@
 ![Abstruct](assets/abstract.png)
 
 
+## デモ動画 | YouTube
+[![デモ動画](http://img.youtube.com/vi/RYqe5Uo7gMc/0.jpg)](https://www.youtube.com/watch?v=RYqe5Uo7gMc)
+
 ## 主要機能
 
 - TELLOの基本操作: 離陸、着陸、前後左右移動、上下移動、回転、速度確認など

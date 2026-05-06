@@ -1,6 +1,8 @@
 # drone-ai-agent
-
 ドローンをAIエージェントから操作し、映像・状態をモニタリングするための実験用アプリケーションです。TELLO SDKのコマンド実行、Rerunダッシュボード、MCPサーバを提供します。
+
+![Abstruct](assets/abstract.png)
+
 
 ## 主要機能
 
